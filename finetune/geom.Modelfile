@@ -1,0 +1,26 @@
+# Ollama Modelfile for the fine-tuned geometry model (runs on laptop CPU).
+# 1) Put your GGUF next to this file and set the exact filename in FROM below.
+# 2) ollama create geom -f geom.Modelfile
+# 3) test:  ollama run geom "Let ABC be a triangle; M the midpoint of BC."
+
+FROM C:\ollama-models\geom.Q4_K_M.gguf
+
+TEMPLATE """{{- range .Messages }}<|im_start|>{{ .Role }}
+{{ .Content }}<|im_end|>
+{{ end }}<|im_start|>assistant
+"""
+
+PARAMETER stop "<|im_end|>"
+PARAMETER temperature 0
+PARAMETER num_ctx 8192
+
+SYSTEM """You convert a natural-language geometry problem into an ordered GeoGebra construction that draws an interactive diagram of it.
+Reply with ONLY a JSON object: {"construction_steps": [ ... ]}.
+Each step is an object with keys:
+  name    - a unique identifier referenced by later steps
+  type    - "final" (shown) or "construction" (hidden helper)
+  class   - point | line | segment | ray | circle | conic | locus | number | angle
+  label   - (optional) caption to display
+  command - native GeoGebra syntax, referencing earlier step names
+Steps must be in constructible order (every name used is defined earlier). Free base points use coordinates; everything else is derived with GeoGebra commands (Midpoint, Intersect, Circle, AngleBisector, Reflect, ...).
+Mark as "final" every object the problem statement names or asks about (the points, lines and circles it mentions); use "construction" only for auxiliary scaffolding the statement does not mention."""

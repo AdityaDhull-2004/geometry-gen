@@ -1,0 +1,9 @@
+# Ignore python cache
+**/__pycache__/
+*.pyc
+
+# Ignore the massive model weights file
+finetune/geom.Q4_K_M.gguf
+
+# Ignore any local environment files or credentials
+.env
