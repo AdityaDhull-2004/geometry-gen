@@ -240,6 +240,55 @@ function autoParameterizeRandom(steps) {
   return { steps: out, rewrites: rewrites };
 }
 
+// ── Auto-correct intersection indices ──────────────────────────────────────
+// A frequent model error: Intersect(<circle>, <line through a known point P>, 1)
+// returns P itself, so the "new" point collapses onto P (e.g. C and D landing on B).
+// We render once, find any point whose coordinates coincide with an EARLIER point,
+// and if its command is Intersect(..., k) we flip the index (1<->2). A few passes.
+function autoFixIndices(steps, seedByName) {
+  for (let pass = 0; pass < 3; pass++) {
+    ggbApi.reset();
+    const coords = {};
+    for (const st of steps) {
+      const seed = seedByName.get(st.name);
+      try {
+        if (seed) {
+          ggbApi.evalCommand(st.name + " = Point(" + seed.path + ")");
+          ggbApi.evalCommand("SetValue(" + st.name + ", Point(" + seed.path + ", " + seed.t + "))");
+        } else {
+          ggbApi.evalCommand(st.name + " = " + st.command);
+        }
+      } catch (e) { /* ignore */ }
+      if (st.class === "point" && ggbApi.exists(st.name)) {
+        try { coords[st.name] = [ggbApi.getXcoord(st.name), ggbApi.getYcoord(st.name)]; }
+        catch (e) { /* unreadable object */ }
+      }
+    }
+    let changed = false;
+    const seen = [];
+    for (const st of steps) {
+      if (st.class !== "point") continue;
+      const c = coords[st.name];
+      if (c) {
+        for (const pn of seen) {
+          const p = coords[pn];
+          if (p && Math.hypot(c[0] - p[0], c[1] - p[1]) < 1e-6) {   // collapsed onto earlier point
+            const m = st.command.match(/^(\s*Intersect\(.+,)\s*(\d+)\s*\)\s*$/);
+            if (m) {
+              const idx = parseInt(m[2], 10);
+              st.command = m[1] + " " + (idx === 1 ? 2 : 1) + ")";   // flip the index
+              changed = true;
+            }
+            break;
+          }
+        }
+      }
+      seen.push(st.name);
+    }
+    if (!changed) break;
+  }
+}
+
 // ── Render one problem object ──────────────────────────────────────────────
 function render(data) {
   lastData = data;
@@ -249,6 +298,10 @@ function render(data) {
     ? (randomT ? autoParameterizeRandom(data.construction_steps)
                : autoParameterize(data.construction_steps))
     : { steps: data.construction_steps, rewrites: [] };
+
+  const seedByName = new Map();
+  for (const r of rewrites) seedByName.set(r.name, r);
+  autoFixIndices(steps, seedByName);   // flip Intersect indices that collapse a new point onto an existing one
 
   ggbApi.reset();                                  // clear any previous diagram
   if (ggbApi.setGridVisible) ggbApi.setGridVisible(false);   // never show the grid
@@ -270,8 +323,6 @@ function render(data) {
   //    stays draggable) and then nudged to their chosen parameter via SetValue.
   //    Writing Point(<path>, t) directly would PIN the point to t, making it
   //    impossible to drag along the path afterwards.
-  const seedByName = new Map();
-  for (const r of rewrites) seedByName.set(r.name, r);
   const failed = [];
   for (const st of steps) {
     const seed = seedByName.get(st.name);
