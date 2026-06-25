@@ -16,6 +16,7 @@ import os, io, sys, json, argparse
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
+sys.path.insert(0, os.path.join(os.path.dirname(HERE), "datagen"))
 from post_filter import extract_json
 
 ADAPTER, MAX_SEQ, MAX_NEW = "qwen25coder3b-geom-lora", 8192, 1280
@@ -76,7 +77,7 @@ def main():
     if not args.no_validate:
         from validator import GeoGebraValidator
         from post_filter import PostFilter
-        ctx = GeoGebraValidator(harness_dir=HERE)
+        ctx = GeoGebraValidator(harness_dir=os.path.dirname(HERE))
         ctx.start()
         pf = PostFilter(validator=ctx)
         log("validator ready.")

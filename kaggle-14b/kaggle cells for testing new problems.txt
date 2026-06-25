@@ -1,0 +1,57 @@
+Cell 1
+
+!pip install -q unsloth
+
+
+
+
+
+
+
+
+
+
+
+Cell 2
+
+import json, glob
+from unsloth import FastLanguageModel
+
+ADAPTER = glob.glob("/kaggle/input/**/adapter_config.json", recursive=True)[0].rsplit("/", 1)[0]
+m, tok = FastLanguageModel.from_pretrained(ADAPTER, max_seq_length=2048, load_in_4bit=True)
+FastLanguageModel.for_inference(m)
+
+SYS = ('You convert a natural-language geometry problem into an ordered GeoGebra '
+       'construction. Reply with ONLY a JSON object: {"construction_steps": [ ... ]}. '
+       'Each step has name, type ("final"/"construction"), class, optional label, and '
+       'command (native GeoGebra). Steps in constructible order; free base points use '
+       'coordinates. Mark as "final" every object the statement names; use "construction" '
+       'only for scaffolding.')
+
+def gen_clean(s):
+    ids = tok.apply_chat_template([{"role":"system","content":SYS},{"role":"user","content":s}],
+            tokenize=True, add_generation_prompt=True, return_tensors="pt").to(m.device)
+    o = m.generate(input_ids=ids, max_new_tokens=1536, do_sample=False, pad_token_id=tok.eos_token_id)
+    raw = tok.decode(o[0][ids.shape[1]:], skip_special_tokens=True)
+    try:
+        obj = json.loads(raw[raw.find("{"): raw.rfind("}")+1])
+        for st in obj.get("construction_steps", []):
+            if "class" in st: st["class"] = st["class"].lower()
+        print(json.dumps(obj, indent=2, ensure_ascii=False))
+    except Exception as e:
+        print("⚠ couldn't parse clean JSON, here's the raw output:\n", raw)
+
+
+
+
+
+
+
+
+
+
+
+Cell 3
+
+gen_clean("Let ABC be a triangle with circumcentre O; draw the circumcircle and the three medians")
+

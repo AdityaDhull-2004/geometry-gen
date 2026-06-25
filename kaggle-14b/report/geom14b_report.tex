@@ -1,0 +1,273 @@
+\documentclass[11pt]{article}
+
+\usepackage[a4paper,margin=1in]{geometry}
+\usepackage{booktabs}
+\usepackage{amsmath}
+\usepackage{xcolor}
+\usepackage{listings}
+\usepackage{enumitem}
+\usepackage[hidelinks]{hyperref}
+
+\definecolor{codebg}{rgb}{0.96,0.96,0.96}
+\lstset{
+  basicstyle=\ttfamily\small,
+  backgroundcolor=\color{codebg},
+  breaklines=true,
+  frame=single,
+  columns=fullflexible,
+  keepspaces=true,
+  showstringspaces=false,
+}
+
+\newcommand{\code}[1]{\texttt{#1}}
+
+\title{\textbf{Fine-Tuning Qwen2.5-Coder-14B for\\ Natural-Language $\rightarrow$ GeoGebra Geometry Construction}\\[4pt]
+\large Training Report (Kaggle, QLoRA)}
+\author{Aditya Dhull}
+\date{June 25, 2026}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+This report documents the fine-tuning of \textbf{Qwen2.5-Coder-14B-Instruct} to translate
+natural-language Olympiad-geometry problems into ordered \textbf{GeoGebra} construction
+programs encoded as JSON, which render as interactive diagrams. The model was trained with
+\textbf{QLoRA} on a free \textbf{Kaggle} GPU (NVIDIA T4, 16~GB) over a curated and
+paraphrase-augmented dataset of geometry problems. Training completed in roughly two hours.
+On 31 held-out problems the model produced \textbf{100\% syntactically valid JSON} and
+\textbf{71\% fully renderable, non-degenerate figures} with no repair pass --- exceeding the
+earlier 3B baseline (65\% \emph{with} a repair loop). We describe the dataset, the model and
+hyperparameters, the training environment and procedure, the results and failure analysis,
+the deployment constraints, and the steps to reproduce.
+\end{abstract}
+
+\section{Problem and Approach}
+The system maps a natural-language geometry problem to an \emph{ordered} list of GeoGebra
+construction steps (JSON), each step being a named object with a native GeoGebra command that
+references previously defined names. Rendering the steps in a GeoGebra applet yields an
+interactive, draggable diagram. The schema for one step is:
+
+\begin{lstlisting}
+{ "name": <unique id>, "type": "final" | "construction",
+  "class": point|line|segment|ray|circle|conic|locus|number|angle,
+  "label": <optional caption>, "command": <native GeoGebra syntax> }
+\end{lstlisting}
+
+\code{final} objects are shown; \code{construction} objects are hidden scaffolding. A
+\emph{visibility rule} enforces that every entity named in the problem statement is marked
+\code{final} (and thus visible).
+
+A prior fine-tune of \textbf{Qwen2.5-Coder-3B} (on a 6~GB GPU) learned the output \emph{format}
+but frequently emitted incorrect GeoGebra commands (e.g.\ \code{Incircle(I, line)} instead of
+\code{Incircle(A,B,C)}). Because such command errors stem from the small base model's limited
+pretrained knowledge rather than from a lack of data, we scaled the base model to 14B
+parameters; this report covers that 14B run.
+
+\section{Dataset}
+\paragraph{Composition.} The corpus contains \textbf{232 distinct problems}: 82 hand-curated
+``gold'' problems and 150 problems generated and then verified inside a real (headless)
+GeoGebra engine for both renderability and the geometric property they assert.
+
+\paragraph{Split.} A deterministic, source-stratified split (seed 42, $\sim$13\% eval) yields
+\textbf{201 training} and \textbf{31 evaluation} problems (the eval set comprises 11 gold $+$
+20 generated and is never trained on).
+
+\paragraph{Augmentation.} The \emph{training} split is paraphrase-augmented: each statement is
+restated in meaning-preserving ways (synonyms, openers, British/American spelling) while the
+construction target is unchanged. This expands the training set $201 \rightarrow 658$ and
+improves robustness to phrasing. The eval split is left original to keep the measurement
+honest.
+
+\paragraph{Format.} Each example is a chat triple --- a fixed \emph{system} prompt describing
+the schema and the visibility rule, a \emph{user} turn (the problem statement), and an
+\emph{assistant} turn (the JSON construction). The longest example is $\approx$1{,}295 tokens.
+
+\begin{table}[h]
+\centering
+\caption{Dataset composition and split.}
+\begin{tabular}{lrr}
+\toprule
+ & \textbf{Train} & \textbf{Eval} \\
+\midrule
+Gold (hand-curated)      & 71  & 11 \\
+Generated (validated)    & 130 & 20 \\
+\midrule
+Distinct problems        & 201 & 31 \\
+After paraphrase aug.    & \textbf{658} & 31 (unchanged) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Model and Method}
+\paragraph{Base model.} \code{Qwen2.5-Coder-14B-Instruct}, loaded in 4-bit
+(\code{unsloth/Qwen2.5-Coder-14B-Instruct-bnb-4bit}), chosen for its strong code/structured-output
+ability and permissive Apache-2.0 license.
+
+\paragraph{Method.} \textbf{QLoRA}: low-rank adapters trained on top of the frozen 4-bit base,
+via the Unsloth library (which provides the memory optimizations that let a 14B fit a single
+16~GB GPU). Only the response (assistant JSON) contributes to the loss; the prompt is masked.
+
+\paragraph{Trainable parameters.} \textbf{137{,}625{,}600} of \textbf{14{,}907{,}659{,}264}
+($\approx$0.92\%).
+
+\begin{table}[h]
+\centering
+\caption{Training hyperparameters.}
+\begin{tabular}{ll}
+\toprule
+\textbf{Setting} & \textbf{Value} \\
+\midrule
+LoRA rank $r$ / $\alpha$ / dropout & 32 / 32 / 0 \\
+LoRA target modules & q,\,k,\,v,\,o,\,gate,\,up,\,down \\
+Max sequence length & 1536 \\
+Per-device batch size & 1 \\
+Gradient accumulation & 8 (effective batch 8) \\
+Epochs & 2 \\
+Total optimizer steps & 166 \\
+Learning rate / schedule & $2\times10^{-4}$ / cosine \\
+Warmup ratio & 0.05 \\
+Optimizer & adamw\_8bit \\
+Weight decay & 0.01 \\
+Precision & fp16 (T4 has no bf16) \\
+Gradient checkpointing & enabled (Unsloth) \\
+Loss masking & response-only (ChatML markers) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{Epoch choice.} Because the augmentation makes each construction appear $\sim$3 times
+per epoch, 2 epochs ($\sim$6 exposures per construction) is the sweet spot: it halves runtime
+versus 4 epochs \emph{and} reduces overfitting on the 232 distinct constructions.
+
+\section{Training Environment and Procedure}
+Training ran on a Kaggle notebook with a single GPU (Unsloth is single-GPU; the second T4 in a
+``T4 $\times$2'' instance cannot accelerate a 14B that already needs Unsloth's memory savings
+to fit one 16~GB card).
+
+\begin{table}[h]
+\centering
+\caption{Software / hardware environment.}
+\begin{tabular}{ll}
+\toprule
+GPU & NVIDIA Tesla T4, 14.56~GB usable, compute 7.5 \\
+Peak GPU memory & $\approx$12.7~GB \\
+PyTorch / CUDA & 2.10.0+cu128 / 12.8 \\
+Triton & 3.6.0 \\
+Transformers & 5.5.0 \\
+Unsloth & 2026.6.9 \\
+Attention backend & xFormers 0.0.35 (FA2 unavailable) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{Runtime and loss.} Training took \textbf{6{,}917~s} ($\approx$1~h~55~m) for 166
+steps ($\approx$32--42~s/step). The mean training loss was \textbf{0.0346}; per-step loss fell
+smoothly from $\sim$0.16 to $\sim$0.006.
+
+\begin{table}[h]
+\centering
+\caption{Representative training-loss trajectory.}
+\begin{tabular}{rr}
+\toprule
+\textbf{Epoch} & \textbf{Loss} \\
+\midrule
+0.12 & 0.1606 \\
+0.49 & 0.0578 \\
+0.85 & 0.0254 \\
+1.09 & 0.0143 \\
+1.57 & 0.0078 \\
+1.94 & 0.0070 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Results}
+The trained model was evaluated on the 31 held-out problems by generating a construction for
+each (greedy decoding, up to 1536 new tokens), then rendering every construction in a headless
+GeoGebra engine across 7 random parameterizations. A construction counts as ``valid'' only if
+\emph{all} trials render with no broken steps and no degeneracy (points at infinity, collapse,
+mass coincidence).
+
+\begin{table}[h]
+\centering
+\caption{Functional evaluation on 31 held-out problems (14B vs.\ 3B baseline; identical split).}
+\begin{tabular}{lcc}
+\toprule
+\textbf{Model} & \textbf{Parseable JSON} & \textbf{Renders \& valid} \\
+\midrule
+Qwen2.5-Coder-3B  & 100\% & 61\% raw / \textbf{65\% with repair loop} \\
+Qwen2.5-Coder-14B & 100\% & \textbf{71\% raw (no repair)} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The 14B at \textbf{71\% raw} surpasses the 3B's \textbf{65\% with} a repair pass; the repair
+loop was not applied to the 14B. On simple single-construction prompts (incircle and contact
+triangle, the three altitudes, two tangents from an external point) the 14B produced correct,
+complete figures.
+
+\paragraph{Failure analysis (9 of 31).} The remaining failures are command-level issues:
+\begin{itemize}[noitemsep]
+  \item \textbf{Hallucinated commands} (plausible names that are not GeoGebra): \code{Incenter(...)},
+        \code{PerpendicularFoot(...)}, \code{Reflection(...)} (the correct name is \code{Reflect}).
+  \item \textbf{Malformed commands}: \code{Intersect(Circle(O2,P1), 1)} (missing second object),
+        \code{AngleBisector(A, B)} (needs three points), \code{Intersect(incircle, seg)} (missing index).
+  \item \textbf{Undefined references}: e.g.\ \code{Line(A, Aprime)} with \code{Aprime} never defined.
+\end{itemize}
+Most of these are mechanical and are exactly what the generate$\rightarrow$validate$\rightarrow$repair
+loop corrects (feed the failing step and error back); applying it is expected to lift the rate
+toward $\sim$80\%.
+
+\section{Deployment}
+Producing a single quantized GGUF for local serving requires merging the LoRA into a 16-bit
+copy of the 14B and quantizing it, which peaks at $\approx$58~GB of disk --- exceeding Kaggle's
+$\approx$57~GB, so the GGUF export fails with ``no space left on device.'' The training itself
+is unaffected; the LoRA adapter ($\approx$290~MB) saves successfully. The model is therefore
+served by \textbf{loading the 4-bit base $+$ adapter} in a Kaggle/Colab inference notebook
+(no GGUF needed). Generated JSON is pasted into a single-file GeoGebra renderer to view the
+interactive diagram.
+
+\section{Reproducibility}
+The pipeline is script-driven:
+\begin{itemize}[noitemsep]
+  \item \code{prepare\_data.py} --- merges the 232 problems, applies the visibility rule, augments
+        the train split, and writes \code{train.jsonl} (658) / \code{eval.jsonl} (31).
+  \item \code{augment.py} --- meaning-preserving paraphrasing of statements.
+  \item \code{qlora\_train\_14b.py} --- the QLoRA training described above.
+  \item Inference cells --- load the adapter and generate JSON for new problems.
+\end{itemize}
+
+A minimal inference recipe (Kaggle: GPU + Internet on, \code{geom14b-adapter} dataset attached):
+\begin{lstlisting}
+from unsloth import FastLanguageModel
+import glob, json
+ADAPTER = glob.glob("/kaggle/input/**/adapter_config.json", recursive=True)[0].rsplit("/",1)[0]
+m, tok = FastLanguageModel.from_pretrained(ADAPTER, max_seq_length=2048, load_in_4bit=True)
+FastLanguageModel.for_inference(m)
+# build chat prompt (system schema + user problem), greedy generate, parse JSON, lowercase class
+\end{lstlisting}
+
+\section{Limitations and Future Work}
+\begin{itemize}[noitemsep]
+  \item \textbf{Data breadth.} Only 232 \emph{distinct} constructions; augmentation adds phrasing
+        variety, not new construction types. More distinct, validated problems would widen coverage.
+  \item \textbf{Command hallucinations.} A short ``use exactly these GeoGebra commands'' hint in the
+        prompt, and/or more data, would suppress invented names like \code{Reflection}.
+  \item \textbf{Repair loop.} Not yet wired into the 14B inference path; doing so should raise the
+        usable rate to $\sim$80\%.
+  \item \textbf{Logical correctness.} The validator checks \emph{renderability}, not whether the figure
+        faithfully matches the statement; a machine-checkable goal field would close this gap.
+  \item \textbf{Serving.} A free, always-on API for a 14B is impractical; on-demand notebook
+        inference (or a smaller distilled model with a GGUF) is the realistic path.
+\end{itemize}
+
+\section{Conclusion}
+Scaling the base model to Qwen2.5-Coder-14B and fine-tuning with QLoRA on a free Kaggle T4
+produced a model that reliably emits valid, complete GeoGebra constructions for most held-out
+problems (100\% parseable, 71\% renderable raw), clearly improving on the 3B baseline and
+fixing the dominant command-error mode at little additional cost. The remaining gap is
+addressable with the existing repair loop, a small prompt refinement, and additional distinct
+training data.
+
+\end{document}

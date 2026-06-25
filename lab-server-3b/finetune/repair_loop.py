@@ -14,6 +14,7 @@ import os, io, sys, json, argparse
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
+sys.path.insert(0, os.path.join(os.path.dirname(HERE), "datagen"))
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 from validator import GeoGebraValidator
@@ -86,7 +87,7 @@ def main():
 
     results = []
     before = after = 0
-    with GeoGebraValidator(harness_dir=HERE) as v:
+    with GeoGebraValidator(harness_dir=os.path.dirname(HERE)) as v:
         pf = PostFilter(validator=v)
         for i, pr in enumerate(preds, 1):
             stmt = pr["problem_statement"]
