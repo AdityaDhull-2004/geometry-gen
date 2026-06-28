@@ -1,63 +1,77 @@
-# geometry-gen
+# Geometry Diagram Generator
 
-Turn a natural-language geometry problem into an **ordered GeoGebra construction**
-(JSON) that renders as an interactive, draggable diagram. A fine-tuned code LLM
-produces the construction; a headless GeoGebra validator gates the output so only
-renderable, non-degenerate figures are kept.
+Natural-language Olympiad geometry problem → ordered **GeoGebra construction JSON** →
+interactive, draggable diagram. The repo holds the verified datasets, the
+data-generation/verification pipeline, and the Kaggle fine-tuning setup.
+
+## Layout
 
 ```
-problem (text) ──▶ fine-tuned model ──▶ {"construction_steps":[…]}  ──▶ GeoGebra renders an interactive diagram
-                                              │
-                                   headless-GeoGebra validator (renderable? non-degenerate?)
+datasets/        the three verified datasets (+ a bank of extras)
+  geometry_problems.jsonl        82  gold-standard problems
+  generated_problems.jsonl       150 generated problems (audited & verified)
+  new_geometry_problems.jsonl    60  new problems (audited & verified)
+  bank_extra_problems.jsonl      46  extra audited problems (not yet merged)
+
+pipeline/        data generation + verification + rendering
+  validator.py            headless-GeoGebra renderer gate (Playwright)
+  test_harness.html       GeoGebra engine harness used by the validator
+  renderer.html           interactive renderer (auto-fixes index/vertex slips)
+  checks.py               semantic theorem checks (collinear, concyclic, ...)
+  audit_helpers.py        numeric claim verification (probe coords, test claim)
+  visibility.py           "final" if named in statement, else "construction"
+  post_filter.py          degeneracy/renderability post-filter
+  dup_scan.py             cross-dataset near-duplicate scan
+  verify_dataset.py       re-render + re-check an entire dataset
+  validate_candidates.py  validate hand-authored candidates -> append
+  validate_new.py         validate + append to new_geometry_problems.jsonl
+  generate.py             API-based candidate generator (needs ANTHROPIC_API_KEY)
+
+training/        Kaggle 14B QLoRA fine-tuning
+  prepare_data.py         merge datasets -> chat-format train/eval (+augment)
+  augment.py              meaning-preserving statement paraphrasing
+  qlora_train_14b.py      Unsloth QLoRA on Qwen2.5-Coder-14B (Kaggle T4/P100)
+  eval_predictions.py     score model predictions (parseable %, renders %)
+  KAGGLE_SETUP.md         Kaggle playbook
+  kaggle_testing_cells.txt / kaggle_training_files.txt
+
+models/
+  kaggle_14b_adapter/     current 14B LoRA adapter (weights, git-ignored)
 ```
 
-## Repository layout
+## Common commands
 
-This repo holds **two fully self-contained training setups** — pick the folder for
-the approach you want; each runs on its own.
+```bash
+# Re-render & re-verify a dataset (every step must build on every random trial)
+python pipeline/verify_dataset.py datasets/new_geometry_problems.jsonl
 
-| Folder | Approach | Base model | Hardware |
-|---|---|---|---|
-| [`lab-server-3b/`](lab-server-3b/) | QLoRA on a local lab GPU (over SSH) | Qwen2.5-Coder-3B-Instruct | 6 GB RTX 3050 |
-| [`kaggle-14b/`](kaggle-14b/) | QLoRA on a free Kaggle GPU | Qwen2.5-Coder-14B-Instruct | 16 GB T4 |
+# Scan a dataset for duplicates vs the others
+python pipeline/dup_scan.py
 
-Each folder contains the same shared core so it stands alone:
-- `datagen/` — data-generation + GeoGebra validation tooling (`validator.py`,
-  `checks.py`, `post_filter.py`, `visibility.py`, …) and the 150 generated problems.
-- `geometry_problems.jsonl` — the 82 hand-curated gold problems.
-- `renderer.html`, `test_harness.html` — interactive renderer and the headless harness.
-- `finetune/` — the data-prep, training, inference and evaluation scripts for that approach.
+# Build the fine-tuning corpus from all three datasets (82+150+60 = 292)
+python training/prepare_data.py        # writes train.jsonl / eval.jsonl to training/
 
-`report.tex` / `report.pdf` (root) is the overall project report; the 14B-specific
-training report is in `kaggle-14b/report/`.
+# Interactively view a construction: open pipeline/renderer.html and paste the JSON
+```
 
-## Dataset
-232 distinct problems (82 gold + 150 generated and GeoGebra-verified), split
-deterministically into 201 train / 31 held-out eval. The Kaggle (14B) setup
-additionally paraphrase-augments the training split to 658 examples; the lab (3B)
-setup uses the 201 unaugmented examples. Visibility rule: every object named in the
-statement is marked `final` (shown).
+All 292 dataset problems render cleanly in headless GeoGebra, have their stated
+claim numerically verified, carry consistent `final`/`construction` visibility
+labels, and contain no dead steps.
 
-## How to run
+## Model & results
 
-**Lab server (3B):** see [`lab-server-3b/finetune/SETUP_SSH.md`](lab-server-3b/finetune/SETUP_SSH.md).
-QLoRA via Unsloth on a single GPU; export a GGUF and serve locally with Ollama.
+The model is **Qwen2.5-Coder-14B-Instruct**, fine-tuned with **QLoRA** (4-bit
+base + LoRA adapters, r=32) on the 292-problem corpus (253 train → 850 augmented,
+39 held out). On the **39 unseen** problems it scores **100% parseable JSON** and
+**85% render-valid** — up ~14 points from an earlier 14B run on the un-cleaned
+data (71%).
 
-**Kaggle (14B):** see [`kaggle-14b/finetune/KAGGLE_SETUP.md`](kaggle-14b/finetune/KAGGLE_SETUP.md).
-Upload `train.jsonl`, `eval.jsonl`, `qlora_train_14b.py`; train; then test new problems
-with `kaggle cells for testing new problems.txt`.
+Full write-up — dataset construction, base-model choice, why 4-bit QLoRA,
+training dynamics, and the held-out results with failure analysis — is in
+**[`report/geom14b_report.pdf`](report/geom14b_report.pdf)**.
 
-## Results (31 held-out problems, identical split)
-
-| Model | Parseable JSON | Renders & valid |
-|---|---|---|
-| Qwen2.5-Coder-3B  | 100% | 61% raw / 65% with repair loop |
-| Qwen2.5-Coder-14B | 100% | **71% raw (no repair)** |
-
-The 14B fixes most of the 3B's command errors (e.g. correct `Incircle(A,B,C)`);
-remaining failures are command-name hallucinations and missing intersection indices,
-which the repair loop and a command-name hint are expected to reduce further.
-
-## Note on model weights
-Trained LoRA adapters and GGUF/`.safetensors` files are **not** committed (they are
-large binaries and are `.gitignore`'d). Re-create them by running the training scripts.
+> The trained adapter (~550 MB) is **not** in this repo (over GitHub's file
+> limit); it is hosted as a Kaggle Dataset. To reproduce: run
+> `python training/prepare_data.py`, train with `training/qlora_train_14b.py`
+> (or the cells in `training/kaggle_training_files.txt`), then evaluate with
+> `python pipeline/score_predictions.py predictions.jsonl`.

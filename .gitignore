@@ -2,14 +2,33 @@
 **/__pycache__/
 *.pyc
 
-# Large model artifacts (kept locally, NOT uploaded to GitHub)
-*.gguf
+# Large model weights / adapters
+models/
 *.safetensors
+*.gguf
 *.pt
 *.bin
-**/kaggle trained weights/
-**/*-gguf/
-**/qwen25coder*-geom-lora/
 
-# Local environment / credentials
+# Regenerable training splits (rebuilt by training/prepare_data.py)
+training/train.jsonl
+training/eval.jsonl
+training/eval_problems.jsonl
+
+# Pipeline scratch outputs
+pipeline/new_rejected.jsonl
+pipeline/rejected.jsonl
+pipeline/validation_report.json
+
+# LaTeX build artifacts
+report/*.aux
+report/*.log
+report/*.out
+report/*.toc
+report/*.synctex.gz
+
+# CLI download scratch / root eval output (the kept copy lives in report/)
+kaggle_out/
+predictions.jsonl
+
+# Local env / credentials
 .env
